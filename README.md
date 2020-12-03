@@ -29,3 +29,57 @@ Ah, no, not actually. LOAD DATA and INSERT both round - see test script (`ingres
 ### Handoff to SQL
 
 OK, next investigation. Maybe we’re handing the value to SQL differently.
+
+#### Old way:
+
+```go
+es, err = tx.Exec(queries.Get("upsert-txn-volume"), volume.TransactionId, volume.OldestQueue, volume.LatestQueue, volume.CaptureCount, volume.UndoCaptureCount,
+				volume.SendCurrencyCode, volume.PayoutCurrencyCode, volume.PayoutAmount, volume.OldestCancellation, volume.LatestQueue, volume.CaptureCount, volume.UndoCaptureCount,
+        volume.SendCurrencyCode, volume.PayoutCurrencyCode, volume.PayoutAmount, volume.OldestCancellation)
+```
+
+So passing `volume.OldestCancellation` to `tx.Exec` directly
+
+What function does `tx.Exec` call on the data it gets?
+
+*Probably* it casts it to a time.Time?
+
+#### New way:
+
+```go
+// Calls db.RecordsToBytes
+buf, err := db.RecordsToBytes(txnVolume)
+
+// Which calls Volume.TableRecord
+// TableRecord implements db.TableRecord.
+func (v Volume) TableRecord() []string {
+	oldestCancellation := "\\N"
+	if v.OldestCancellation != nil {
+		oldestCancellation = v.OldestCancellation.String()
+	}
+	return []string{
+		v.TransactionId,
+		v.OldestQueue.String(),
+		v.LatestQueue.String(),
+		strconv.Itoa(v.CaptureCount),
+		strconv.Itoa(v.UndoCaptureCount),
+		v.SendCurrencyCode.String(),
+		v.PayoutCurrencyCode.String(),
+		v.PayoutAmount.StringFullPrecision(),
+		oldestCancellation,
+	}
+}
+```
+
+So calling `volume.OldestCancellation.String()`.
+
+```go
+// Implementation of SqlTimestamp.String():
+type SqlTimestamp time.Time
+
+func (ts SqlTimestamp) String() string {
+	return time.Time(ts).Format(SqlTimestampFormat)
+}
+```
+
+Have confirmed via `./main.go`: calling `.String()` does **TRUNCATE** the timestamp.
